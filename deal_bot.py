@@ -3,11 +3,17 @@ from telebot import types
 import pandas as pd
 import traceback
 import re
+import sqlite3
+import psycopg2
+import os
 
-#TODO нужно сделать базу даннызх с делами
+# TODO выкатить на прод хероку
 
 token_path = r"credentials.txt"
 bot_token = open(token_path).readlines()[0].replace('\n', '')
+
+STAND_TYPE = 'TEST'  # PROD\TEST, influence on work with db
+db_name = 'house_db.db'
 
 top_users = ['dampall']
 
@@ -17,7 +23,6 @@ message_dict = {'welcome': 'Hello! Type here your deals with command /deals',
                 'parsed': 'Deals are parsed',
                 'show_deals': 'Choose priority type:',
                 'no_deals': 'Deals are not filled, please fill with command /deals'}
-deals_df = None
 
 try:
     bot = telebot.TeleBot(bot_token)
@@ -39,9 +44,10 @@ try:
             bot.send_message(chat_id, message_dict['preparing'], parse_mode='HTML')
             try:
                 deals_df = parse_deals(message.text.replace('/deals', ''))
+                set_deals(deals_df)
                 bot.send_message(chat_id, message_dict['parsed'], reply_markup=welcoming_buttons(), parse_mode='HTML')
             except Exception as e:
-                bot.send_message(chat_id, message_dict['exception'] + e, parse_mode='HTML')
+                bot.send_message(chat_id, message_dict['exception'] + str(e), parse_mode='HTML')
 
 
     @bot.message_handler(commands=['show_deals'])
@@ -49,11 +55,10 @@ try:
         username = message.from_user.username
         chat_id = message.chat.id
         if username in top_users:
-            if deals_df:
-                bot.send_message(chat_id, message_dict['show_deals'], reply_markup=welcoming_buttons(),
-                                 parse_mode='HTML')
-            else:
-                bot.send_message(chat_id, message_dict['no_deals'], parse_mode='HTML')
+            bot.send_message(chat_id, message_dict['show_deals'], reply_markup=welcoming_buttons(),
+                             parse_mode='HTML')
+        else:
+            bot.send_message(chat_id, message_dict['no_deals'], parse_mode='HTML')
 
 
     @bot.callback_query_handler(func=lambda call: True)
@@ -64,29 +69,29 @@ try:
         if msg == '/sv_cb':
             print('sv_cb')
             reply_str = 'СВ deals:\n'
-            sample_df = deals_df.loc[deals_df['priority'] == 'СВ', 'task'].to_frame()
-            for index, row in sample_df.iterrows():
+            another_deals = retrieve_deals('СВ')
+            for index, row in another_deals.iterrows():
                 reply_str += row['task']
             reply_str = reply_str.replace('\n', '\n\n')
             bot.send_message(chat_id, reply_str, reply_markup=welcoming_buttons(), parse_mode='HTML')
         elif msg == '/sn_cb':
             reply_str = 'СН deals:\n'
-            sample_df = deals_df.loc[deals_df['priority'] == 'СН', 'task'].to_frame()
-            for index, row in sample_df.iterrows():
+            another_deals = retrieve_deals('СН')
+            for index, row in another_deals.iterrows():
                 reply_str += row['task']
             reply_str = reply_str.replace('\n', '\n\n')
             bot.send_message(chat_id, reply_str, reply_markup=welcoming_buttons(), parse_mode='HTML')
         elif msg == '/nv_cb':
-            reply_str = 'СН deals:\n'
-            sample_df = deals_df.loc[deals_df['priority'] == 'НВ', 'task'].to_frame()
-            for index, row in sample_df.iterrows():
+            reply_str = 'НВ deals:\n'
+            another_deals = retrieve_deals('НВ')
+            for index, row in another_deals.iterrows():
                 reply_str += row['task']
             reply_str = reply_str.replace('\n', '\n\n')
             bot.send_message(chat_id, reply_str, reply_markup=welcoming_buttons(), parse_mode='HTML')
         elif msg == '/nn_cb':
             reply_str = 'НН deals:\n'
-            sample_df = deals_df.loc[deals_df['priority'] == 'НН', 'task'].to_frame()
-            for index, row in sample_df.iterrows():
+            another_deals = retrieve_deals('НН')
+            for index, row in another_deals.iterrows():
                 reply_str += row['task']
             reply_str = reply_str.replace('\n', '\n\n')
             bot.send_message(chat_id, reply_str, reply_markup=welcoming_buttons(), parse_mode='HTML')
@@ -104,7 +109,7 @@ try:
 
 
     def parse_deals(total_str):
-        deal_keys = 'СВ|НВ|СН|НН'
+        deal_keys = '(СВ|НВ|СН|НН)'
         deal_list = re.split(deal_keys, total_str)
         deals_df = pd.DataFrame(columns=['priority', 'task'])
         for i in range(len(deal_list)-1):
@@ -112,6 +117,50 @@ try:
                 priority_key = deal_list[i+1]
                 deals_df = deals_df.append({'priority': priority_key, 'task': deal_list[i]}, ignore_index=True)
         return deals_df
+
+
+    def initialize_cursor():
+        """
+        Function to initialize connection to db for logging
+        Depend on STAND_TYPE (TEST\PROD)
+        :return: cursor
+        """
+        if STAND_TYPE == 'TEST':
+            conn = sqlite3.connect(db_name)
+            cursor = conn.cursor()
+        else:
+            DATABASE_URL = os.environ['DATABASE_URL']
+            conn = psycopg2.connect(DATABASE_URL, sslmode='require')
+            cursor = conn.cursor()
+        return cursor, conn
+
+
+    def set_deals(deals_df):
+        """
+        Function to clear current deals at database and create another new
+        :param deals_df: dataframe with deals
+        :return:
+        """
+        cursor, conn = initialize_cursor()
+        query = """DELETE from deals"""  # clear deals database
+        print(query)
+        cursor.execute(query)
+        print('sent df to table')
+        deals_df.to_sql(name='deals', con=conn, if_exists='append', index=False)
+        conn.commit()
+
+
+    def retrieve_deals(priority_type):
+        """
+        Function to retrieve deals from database with selected priority type
+        :param priority_type: type of priority (sv\sn\nv\nn)
+        :return:
+        """
+        cursor, conn = initialize_cursor()
+        query = f"""SELECT * FROM deals where priority='{priority_type}'"""
+        print(query)
+        another_deals = pd.read_sql(query, conn)
+        return another_deals
 
     while 1:
         try:
