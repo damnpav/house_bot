@@ -1,4 +1,5 @@
 import telebot
+from sqlalchemy import create_engine
 from telebot import types
 import pandas as pd
 import traceback
@@ -146,7 +147,12 @@ try:
         print(query)
         cursor.execute(query)
         print('sent df to table')
-        deals_df.to_sql(name='deals', con=conn, if_exists='append', index=False)
+
+        if STAND_TYPE == 'TEST':
+            deals_df.to_sql(name='deals', con=conn, if_exists='append', index=False)
+        else:
+            engine = create_engine(os.environ['DATABASE_URL'])
+            deals_df.to_sql(name='deals', con=engine, if_exists='append', index=False)
         conn.commit()
 
 
